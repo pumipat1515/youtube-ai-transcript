@@ -11,7 +11,7 @@ st.set_page_config(page_title="YouTube AI Auto-Detect Transcript", layout="wide"
 @st.cache_resource
 def load_whisper_model():
     # ใช้รุ่น "small" เพื่อให้ AI รองรับทุกภาษา และมีความฉลาดพอที่จะเดาภาษาได้แม่นยำ
-    return whisper.load_model("medium")
+    return whisper.load_model("small")
 
 st.title("YouTube AI Audio Transcript 🎬🌍")
 st.write("แอปนี้ใช้ AI ฟังเสียงจากวิดีโอ เดาภาษาให้อัตโนมัติ แล้วแปลงเป็นข้อความ")
