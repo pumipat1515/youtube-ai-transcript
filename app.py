@@ -21,7 +21,22 @@ def download_audio_direct(youtube_url):
     if os.path.exists(file_path):
         os.remove(file_path)
 
-    # 2. รายชื่อบอทจำลองที่จะสลับกันเจาะระบบ YouTube
+    # 1. ลองใช้ PoToken ก่อนเป็นอันดับแรก
+    # PoToken คือโทเคนยืนยันว่าเป็นเบราว์เซอร์จริง ช่วยผ่านการตรวจจับของ YouTube
+    # ได้ดีกว่าการสลับ client เฉย ๆ มาก โดยเฉพาะบน IP ของ Data Center (เช่น Streamlit Cloud)
+    try:
+        st.info("🔑 กำลังลองดาวน์โหลดด้วย PoToken (วิธีที่แนะนำสำหรับ Cloud)...")
+        yt = YouTube(clean_url, client='WEB', use_po_token=True)
+        audio_stream = yt.streams.filter(only_audio=True).first()
+
+        if audio_stream:
+            audio_stream.download(filename=file_path)
+            st.success("ดาวน์โหลดสำเร็จด้วย PoToken!")
+            return file_path
+    except Exception:
+        pass
+
+    # 2. ถ้า PoToken ไม่ผ่าน ให้สลับ client แบบเดิมเป็นแผนสำรอง
     client_list = ['WEB', 'IOS', 'MWEB', 'ANDROID', 'ANDROID_VR']
 
     for client_name in client_list:
