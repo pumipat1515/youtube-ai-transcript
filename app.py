@@ -2,7 +2,7 @@ import streamlit as st
 import re
 import requests
 
-# --- ฟังก์ชันย่อย: แปลงและจัดฟอร์แมตไฟล์ซับไตเติล WebVTT ให้เป็นช่วงเวลาอย่างง่าย ---
+# --- ฟังก์ชันย่อย: แกะและจัดฟอร์แมตไฟล์ซับไตเติล WebVTT ให้แสดงผลสวยงาม ---
 def parse_vtt(vtt_text):
     lines = vtt_text.split('\n')
     result = []
@@ -13,13 +13,16 @@ def parse_vtt(vtt_text):
         line = line.strip()
         if not line:
             if current_time and current_text:
-                result.append({"time": current_time, "text": " ".join(current_text)})
+                clean_text = " ".join(current_text)
+                clean_text = re.sub(r'<[^>]*>', '', clean_text) # ลบแท็กส่วนเกินถ้ามี
+                if clean_text:
+                    result.append({"time": current_time, "text": clean_text})
                 current_text = []
             continue
         if "-->" in line:
             parts = line.split("-->")
-            start = parts[0].strip().split(".")[0]
-            end = parts[1].strip().split(".")[0]
+            start = parts[0].strip().split(".")[0].split(",")[0]
+            end = parts[1].strip().split(".")[0].split(",")[0]
             if start.startswith("00:"): start = start[3:]
             if end.startswith("00:"): end = end[3:]
             current_time = f"{start} - {end}"
@@ -27,12 +30,17 @@ def parse_vtt(vtt_text):
             continue
         else:
             current_text.append(line)
+            
     if current_time and current_text:
-        result.append({"time": current_time, "text": " ".join(current_text)})
+        clean_text = " ".join(current_text)
+        clean_text = re.sub(r'<[^>]*>', '', clean_text)
+        if clean_text:
+            result.append({"time": current_time, "text": clean_text})
+            
     return result
 
-# --- ฟังก์ชันหลัก: ดึงบทบรรยายระบบไฮบริด (ป้องกันปัญหา Cloud IP Block) ---
-def get_youtube_transcript(youtube_url):
+# --- ฟังก์ชันหลัก: ดึงบทบรรยายผ่านเครือข่ายเซิร์ฟเวอร์กระจายศูนย์ทั่วโลก (Invidious Network) ---
+def get_youtube_transcript_decentralized(youtube_url):
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", youtube_url)
     if not match:
         st.error("ลิงก์ YouTube ไม่ถูกต้องครับ")
@@ -40,60 +48,50 @@ def get_youtube_transcript(youtube_url):
     
     video_id = match.group(1)
     
-    # [วิธีที่ 1] ดึงตรงจาก YouTube ด้วยไลบรารีมาตรฐาน
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        try:
-            transcript = transcript_list.find_transcript(['en', 'th'])
-        except:
-            transcript = transcript_list.find_transcript([])
-            
-        raw_data = transcript.fetch()
-        formatted_data = []
-        for entry in raw_data:
-            start_sec = int(entry['start'])
-            end_sec = int(entry['start'] + entry['duration'])
-            start_time = f"{start_sec // 60:02d}:{start_sec % 60:02d}"
-            end_time = f"{end_sec // 60:02d}:{end_sec % 60:02d}"
-            formatted_data.append({"time": f"{start_time} - {end_time}", "text": entry['text']})
-        return formatted_data
-    except Exception:
-        # ถ้าวิธีที่ 1 พัง (เพราะโดน YouTube บล็อก IP บน Streamlit Cloud) ให้ข้ามมาใช้วิธีที่ 2 ทันที
-        pass
-
-    # [วิธีที่ 2] เจาะระบบผ่านเซิร์ฟเวอร์ตัวกลางสำรอง (หลบการบล็อก IP ของ YouTube บนคลาวด์)
-    st.info("🔄 กำลังสลับไปใช้ระบบสำรองเพื่อหลบเลี่ยงการบล็อก IP...")
-    instances = [
-        f"https://pipedapi.kavin.rocks/streams/{video_id}",
-        f"https://pipedapi.moomoo.me/streams/{video_id}",
-        f"https://api.piped.projectsegfau.lt/streams/{video_id}"
+    # รายชื่อเซิร์ฟเวอร์อิสระคุณภาพสูง (กระจายตัวอยู่คนละประเทศ ป้องกันการโดนบล็อกพร้อมกัน)
+    invidious_instances = [
+        "https://yewtu.be",
+        "https://iv.melmac.space",
+        "https://invidious.nerdvpn.de",
+        "https://invidious.flokinet.to",
+        "https://invidious.perennialte.ch"
     ]
     
-    for url in instances:
+    for instance in invidious_instances:
         try:
-            res = requests.get(url, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                subtitles = data.get("subtitles", [])
-                if subtitles:
-                    # เลือกซับภาษาอังกฤษหรือไทยก่อน ถ้าไม่มีให้เอาตัวแรกสุด
-                    selected_sub = subtitles[0]
-                    for sub in subtitles:
-                        if sub.get("languageCode") in ['en', 'th']:
-                            selected_sub = sub
-                            break
-                    
-                    # ดาวน์โหลดไฟล์ซับมาแกะข้อมูลเวลา
-                    vtt_res = requests.get(selected_sub['url'], timeout=10)
-                    if vtt_res.status_code == 200:
-                        parsed_data = parse_vtt(vtt_res.text)
-                        if parsed_data:
-                            return parsed_data
-        except:
-            continue
+            st.info(f"🔄 กำลังดึงข้อมูลผ่านระบบกระจายสายหลัก: {instance.split('//')[1]}...")
             
-    st.error("❌ ไม่สามารถดึงบทบรรยายได้: วิดีโอนี้อาจจะไม่มีระบบคำบรรยาย (Subtitle) หรือระบบความปลอดภัยหนาแน่นมาก รบกวนลองใหม่อีกครั้งครับ")
+            # 1. ยิงไปขอข้อมูลรายละเอียดวิดีโอและซับไตเติลจากอินสแตนซ์นั้นๆ
+            api_url = f"{instance}/api/v1/videos/{video_id}"
+            res = requests.get(api_url, timeout=7)
+            
+            if res.status_code == 200:
+                video_data = res.json()
+                captions = video_data.get("captions", [])
+                
+                if not captions:
+                    continue # ถ้าไม่มีไฟล์ซับในเซิร์ฟเวอร์ตัวนี้ ให้ข้ามไปลองตัวถัดไป
+                
+                # 2. เลือกซับไตเติล (พยายามหาภาษาอังกฤษ 'en' หรือภาษาไทย 'th' ก่อน)
+                selected_caption = captions[0]
+                for cap in captions:
+                    if cap.get("languageCode") in ['en', 'th']:
+                        selected_caption = cap
+                        break
+                
+                # 3. ดาวน์โหลดเนื้อหาซับไตเติลในฟอร์แมต WebVTT
+                caption_url = f"{instance}{selected_caption['url']}&format=vtt"
+                sub_res = requests.get(caption_url, timeout=7)
+                
+                if sub_res.status_code == 200 and "WEBVTT" in sub_res.text:
+                    parsed_lines = parse_vtt(sub_res.text)
+                    if parsed_lines:
+                        st.success(f"✨ ดึงข้อมูลสำเร็จผ่านเซิร์ฟเวอร์: {instance.split('//')[1]}")
+                        return parsed_lines
+        except Exception:
+            continue # เซิร์ฟเวอร์นี้ล่มหรือติดขัด สลับไปตัวถัดไปทันทีแบบไร้รอยต่อ
+            
+    st.error("❌ ระบบดึงข้อมูลจาก YouTube ถูกจำกัดการเข้าถึงเนื่องจากผู้ใช้งานหนาแน่น กรุณารอสักครู่แล้วลองกดใหมู่อีกครั้งนะครับ")
     return None
 
 # ==========================================
@@ -118,7 +116,7 @@ if url:
         st.subheader("บทถอดเสียงพร้อมช่วงเวลา")
         if st.button("เริ่มถอดเสียง"):
             with st.spinner("กำลังประมวลผลคำบรรยาย..."):
-                data = get_youtube_transcript(url)
+                data = get_youtube_transcript_decentralized(url)
                 
                 if data:
                     st.success("ถอดเสียงสำเร็จ!")
