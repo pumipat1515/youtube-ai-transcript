@@ -1,3 +1,2 @@
 streamlit
-openai-whisper
-pytubefix
+youtube-transcript-api
