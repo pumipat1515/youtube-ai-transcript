@@ -1,10 +1,38 @@
 import streamlit as st
 import re
-from youtube_transcript_api import YouTubeTranscriptApi
+import requests
 
-# --- ฟังก์ชัน: ดึงบทบรรยายพร้อมเวลาโดยตรงจาก YouTube ---
+# --- ฟังก์ชันย่อย: แปลงและจัดฟอร์แมตไฟล์ซับไตเติล WebVTT ให้เป็นช่วงเวลาอย่างง่าย ---
+def parse_vtt(vtt_text):
+    lines = vtt_text.split('\n')
+    result = []
+    current_time = ""
+    current_text = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            if current_time and current_text:
+                result.append({"time": current_time, "text": " ".join(current_text)})
+                current_text = []
+            continue
+        if "-->" in line:
+            parts = line.split("-->")
+            start = parts[0].strip().split(".")[0]
+            end = parts[1].strip().split(".")[0]
+            if start.startswith("00:"): start = start[3:]
+            if end.startswith("00:"): end = end[3:]
+            current_time = f"{start} - {end}"
+        elif line.isdigit() or line == "WEBVTT" or line.startswith("NOTE") or line.startswith("Style:"):
+            continue
+        else:
+            current_text.append(line)
+    if current_time and current_text:
+        result.append({"time": current_time, "text": " ".join(current_text)})
+    return result
+
+# --- ฟังก์ชันหลัก: ดึงบทบรรยายระบบไฮบริด (ป้องกันปัญหา Cloud IP Block) ---
 def get_youtube_transcript(youtube_url):
-    # ดึง Video ID ออกมาจากลิงก์
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", youtube_url)
     if not match:
         st.error("ลิงก์ YouTube ไม่ถูกต้องครับ")
@@ -12,21 +40,61 @@ def get_youtube_transcript(youtube_url):
     
     video_id = match.group(1)
     
+    # [วิธีที่ 1] ดึงตรงจาก YouTube ด้วยไลบรารีมาตรฐาน
     try:
-        # เรียกดูรายการซับไตเติลที่มีในคลิป
+        from youtube_transcript_api import YouTubeTranscriptApi
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        
-        # ค้นหาซับไตเติลภาษาอังกฤษหรือภาษาไทยก่อน ถ้าไม่มีจะเลือกตัวแรกสุดที่คลิปนั้นมีอัตโนมัติ
         try:
             transcript = transcript_list.find_transcript(['en', 'th'])
         except:
             transcript = transcript_list.find_transcript([])
             
-        return transcript.fetch()
-        
-    except Exception as e:
-        st.error("❌ ไม่สามารถดึงบทบรรยายได้: วิดีโอนี้อาจจะไม่มีระบบคำบรรยาย (Subtitle) หรือผู้เขียนปิดไว้ครับ")
-        return None
+        raw_data = transcript.fetch()
+        formatted_data = []
+        for entry in raw_data:
+            start_sec = int(entry['start'])
+            end_sec = int(entry['start'] + entry['duration'])
+            start_time = f"{start_sec // 60:02d}:{start_sec % 60:02d}"
+            end_time = f"{end_sec // 60:02d}:{end_sec % 60:02d}"
+            formatted_data.append({"time": f"{start_time} - {end_time}", "text": entry['text']})
+        return formatted_data
+    except Exception:
+        # ถ้าวิธีที่ 1 พัง (เพราะโดน YouTube บล็อก IP บน Streamlit Cloud) ให้ข้ามมาใช้วิธีที่ 2 ทันที
+        pass
+
+    # [วิธีที่ 2] เจาะระบบผ่านเซิร์ฟเวอร์ตัวกลางสำรอง (หลบการบล็อก IP ของ YouTube บนคลาวด์)
+    st.info("🔄 กำลังสลับไปใช้ระบบสำรองเพื่อหลบเลี่ยงการบล็อก IP...")
+    instances = [
+        f"https://pipedapi.kavin.rocks/streams/{video_id}",
+        f"https://pipedapi.moomoo.me/streams/{video_id}",
+        f"https://api.piped.projectsegfau.lt/streams/{video_id}"
+    ]
+    
+    for url in instances:
+        try:
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                subtitles = data.get("subtitles", [])
+                if subtitles:
+                    # เลือกซับภาษาอังกฤษหรือไทยก่อน ถ้าไม่มีให้เอาตัวแรกสุด
+                    selected_sub = subtitles[0]
+                    for sub in subtitles:
+                        if sub.get("languageCode") in ['en', 'th']:
+                            selected_sub = sub
+                            break
+                    
+                    # ดาวน์โหลดไฟล์ซับมาแกะข้อมูลเวลา
+                    vtt_res = requests.get(selected_sub['url'], timeout=10)
+                    if vtt_res.status_code == 200:
+                        parsed_data = parse_vtt(vtt_res.text)
+                        if parsed_data:
+                            return parsed_data
+        except:
+            continue
+            
+    st.error("❌ ไม่สามารถดึงบทบรรยายได้: วิดีโอนี้อาจจะไม่มีระบบคำบรรยาย (Subtitle) หรือระบบความปลอดภัยหนาแน่นมาก รบกวนลองใหม่อีกครั้งครับ")
+    return None
 
 # ==========================================
 # ส่วนหน้าเว็บ (UI)
@@ -54,15 +122,5 @@ if url:
                 
                 if data:
                     st.success("ถอดเสียงสำเร็จ!")
-                    
-                    # วนลูปแสดงข้อความแยกตามช่วงเวลาที่กำหนด
                     for entry in data:
-                        start_sec = int(entry['start'])
-                        end_sec = int(entry['start'] + entry['duration'])
-                        
-                        # จัดฟอร์แมตให้อยู่ในรูปแบบ [นาที:วินาที] เช่น [01:23]
-                        start_time = f"{start_sec // 60:02d}:{start_sec % 60:02d}"
-                        end_time = f"{end_sec // 60:02d}:{end_sec % 60:02d}"
-                        
-                        # แสดงผลลัพธ์บนหน้าจอ
-                        st.markdown(f"⏳ **[{start_time} - {end_time}]** {entry['text']}")
+                        st.markdown(f"⏳ **[{entry['time']}]** {entry['text']}")
