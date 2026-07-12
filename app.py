@@ -41,12 +41,9 @@ if url:
             else:
                 with st.spinner("กำลังดึงข้อมูลจริงจากคลิป..."):
                     try:
-                        # ใช้วิธี list_transcripts เพื่อป้องกันบั๊กหาคำสั่งไม่เจอ
-                        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-                        # ดึงซับไตเติลภาษาอังกฤษหรือไทย
-                        transcript = transcript_list.find_transcript(['en', 'th']).fetch()
-                        
-                        st.success("✨ ดึงข้อมูลสำเร็จ! (ข้อมูลจริงเต็มคลิป 9 นาที)")
+                        # ใช้คำสั่งมาตรฐานสุดในการดึงซับไตเติลภาษาอังกฤษ
+                        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+                        st.success("✨ ดึงข้อมูลสำเร็จ! (ข้อมูลจริง 9 นาที)")
                         
                         # สร้างกล่องเลื่อนได้
                         with st.container(height=500):
@@ -58,5 +55,5 @@ if url:
                                 st.markdown(f"⏳ **[{start_time} - {end_time}]** : {text}")
                                 
                     except Exception as e:
-                        st.error("❌ ไม่สามารถดึงข้อมูลได้: วิดีโอนี้อาจไม่มีซับไตเติล หรือถูก YouTube ปิดกั้น")
-                        st.write(f"รายละเอียดข้อผิดพลาด: {e}")
+                        st.error("❌ เกิดข้อผิดพลาดในการดึงข้อมูล")
+                        st.write(f"รายละเอียด: {e}")
