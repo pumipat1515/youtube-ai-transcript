@@ -1,105 +1,92 @@
 import streamlit as st
-import re
 import whisper
-import yt_dlp
 import os
+import re
+from pytubefix import YouTube
 
-# ตั้งค่าหน้าตาของเว็บ
-st.set_page_config(page_title="YouTube AI Auto-Detect Transcript", layout="wide")
+# --- ฟังก์ชัน: ดาวน์โหลดเสียง (ระบบหมุนเวียนบอทจำลองเพื่อหลบ Error 400/403) ---
+def download_audio_direct(youtube_url):
+    st.info("กำลังเชื่อมต่อกับ YouTube เพื่อดึงไฟล์เสียง...")
+    
+    # 1. ทำความสะอาดลิงก์ (ตัดพวกเวลา &t=... ทิ้ง)
+    match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", youtube_url)
+    if not match:
+        st.error("ลิงก์ YouTube ไม่ถูกต้องครับ")
+        return None
+    
+    clean_url = f"https://www.youtube.com/watch?v={match.group(1)}"
+    file_path = "temp_audio.m4a"
+    
+    # ลบไฟล์เก่าทิ้งก่อน (ถ้ามี)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+        
+    # 2. รายชื่อบอทจำลองที่จะสลับกันเจาะระบบ YouTube
+    client_list = ['WEB', 'IOS', 'MWEB', 'ANDROID', 'ANDROID_VR']
+    
+    for client_name in client_list:
+        try:
+            st.info(f"🤖 กำลังลองดาวน์โหลดด้วยระบบจำลอง: {client_name}...")
+            yt = YouTube(clean_url, client=client_name)
+            audio_stream = yt.streams.filter(only_audio=True).first()
+            
+            if audio_stream:
+                audio_stream.download(filename=file_path)
+                st.success(f"ดาวน์โหลดสำเร็จด้วยระบบจำลอง: {client_name}!")
+                return file_path
+                
+        except Exception as e:
+            continue
+            
+    st.error("ระบบ YouTube ป้องกันหนาแน่นมากในขณะนี้ (ลองกดปุ่มใหมู่อีกครั้งเพื่อสุ่มช่องทางใหม่ครับ)")
+    return None
 
-# โหลดโมเดล AI ของ Whisper
-@st.cache_resource
-def load_whisper_model():
-    # ใช้รุ่น "small" เพื่อให้ AI รองรับทุกภาษา และมีความฉลาดพอที่จะเดาภาษาได้แม่นยำ
-    return whisper.load_model("small")
+# ==========================================
+# ส่วนหน้าเว็บ (UI)
+# ==========================================
+st.set_page_config(page_title="YouTube AI Audio Transcript", page_icon="🎬", layout="wide")
 
 st.title("YouTube AI Audio Transcript 🎬🌍")
 st.write("แอปนี้ใช้ AI ฟังเสียงจากวิดีโอ เดาภาษาให้อัตโนมัติ แล้วแปลงเป็นข้อความ")
 
-# ฟังก์ชันดึง Video ID
-def get_youtube_id(url):
-    regex = r"(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^\"&?\/\s]{11})"
-    match = re.search(regex, url)
-    return match.group(1) if match else None
+# ช่องใส่ลิงก์ให้อาจารย์ทดสอบ
+url = st.text_input("วางลิงก์ YouTube ตรงนี้...")
 
-# ฟังก์ชันแปลงเวลา
-def format_time(seconds):
-    mins = int(seconds // 60)
-    secs = int(seconds % 60)
-    return f"{mins:02d}:{secs:02d}"
-
-# --- ส่วนรับอินพุตจากผู้ใช้ ---
-url_input = st.text_input("วางลิงก์ YouTube ตรงนี้...", placeholder="https://www.youtube.com/watch?v=...")
-
-if url_input:
-    video_id = get_youtube_id(url_input)
+# ถ้ามีการใส่ลิงก์ ให้แสดงวิดีโอและปุ่มกด
+if url:
+    col1, col2 = st.columns(2)
     
-    if not video_id:
-        st.error("❌ กรุณาใส่ลิงก์ YouTube ให้ถูกต้องด้วยครับ")
-    else:
-        # แบ่งหน้าจอเป็น 2 ฝั่ง
-        col1, col2 = st.columns([1.4, 1])
+    with col1:
+        st.subheader("📺 วิดีโอ")
+        st.video(url)
         
-        with col1:
-            st.subheader("📺 วิดีโอ")
-            st.video(f"https://www.youtube.com/watch?v={video_id}")
-            
-        with col2:
-            st.subheader("บทถอดเสียงโดย AI")
-            status_area = st.empty()
-            
-            # โหลด AI เตรียมไว้
-            status_area.info("⏳ กำลังโหลดโมเดล AI...")
-            model = load_whisper_model()
-            
-            status_area.info("⏳ กำลังดาวน์โหลดและวิเคราะห์ภาษา (อาจใช้เวลาสักครู่ ขึ้นอยู่กับความยาวคลิป)...")
-            
-            audio_filename = "temp_audio.mp3"
-            
-            try:
-                # 1. โหลดเฉพาะเสียงจาก YouTube
-                ydl_opts = {
-                    'format': 'bestaudio/best',
-                    'outtmpl': 'temp_audio.%(ext)s', 
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                    'quiet': True,
-                    'noplaylist': True
-                }
+    with col2:
+        st.subheader("บทถอดเสียงโดย AI")
+        if st.button("เริ่มถอดเสียง"):
+            with st.spinner("กำลังดำเนินการ..."):
+                # 1. โหลดเสียงจากลิงก์
+                audio_path = download_audio_direct(url)
                 
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url_input])
-                
-                # 2. ให้ AI ฟังและถอดเสียง (ปล่อยว่างไว้ AI จะเดาภาษาเองอัตโนมัติ)
-                result = model.transcribe(audio_filename)
-                
-                status_area.success(f"✅ AI ถอดเสียงเสร็จเรียบร้อย!")
-                
-                # 3. แสดงผลลงในกรอบแบบเลื่อนได้ (Scrollbox)
-                with st.container(height=450):
-                    for segment in result["segments"]:
-                        time_tag = format_time(segment["start"])
-                        text = segment["text"].strip()
+                if audio_path:
+                    # 2. โหลด AI
+                    st.info("กำลังโหลดโมเดล AI (อาจใช้เวลาสักครู่)...")
+                    model = whisper.load_model("small")
+                    
+                    # 3. ให้ AI ทำงาน
+                    st.info("กำลังถอดเสียง...")
+                    result = model.transcribe(audio_path)
+                    
+                    # 4. แสดงผลลัพธ์แยกตามช่วงเวลา (Timestamps)
+                    st.success("ถอดเสียงสำเร็จ!")
+                    
+                    # ดึงข้อมูลทีละประโยคมาจัดฟอร์แมตเวลา
+                    for segment in result.get("segments", []):
+                        start_sec = int(segment["start"])
+                        end_sec = int(segment["end"])
                         
-                        if text: # ตรวจสอบว่ามีข้อความจริงๆ ถึงจะแสดงผล
-                            st.markdown(f"""
-                            <div style="margin: 8px 0; padding: 10px; border-left: 4px solid #0052cc; background-color: #f0f7ff; border-radius: 0 10px 10px 0; color: #2b2b2b;">
-                                <span style="color: #0052cc; font-weight: bold; background: #dceafe; padding: 2px 6px; border-radius: 4px; margin-right: 8px;">[{time_tag}]</span>
-                                {text}
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
-            except Exception as e:
-                status_area.error("⚠️ เกิดข้อผิดพลาดในการทำงาน")
-                st.warning(f"รายละเอียด: {e}")
-                
-            finally:
-                # 4. ลบไฟล์เสียงชั่วคราวทิ้งเสมอ
-                if os.path.exists(audio_filename):
-                    try:
-                        os.remove(audio_filename)
-                    except:
-                        pass
+                        # แปลงหน่วยวินาทีให้เป็นรูปแบบ นาที:วินาที (เช่น 01:23)
+                        start_time = f"{start_sec // 60:02d}:{start_sec % 60:02d}"
+                        end_time = f"{end_sec // 60:02d}:{end_sec % 60:02d}"
+                        
+                        # พิมพ์ข้อความออกมาพร้อมบอกเวลาด้านหน้า
+                        st.markdown(f"⏳ **[{start_time} - {end_time}]** {segment['text']}")
