@@ -1,20 +1,14 @@
 import streamlit as st
 import re
+from youtube_transcript_api import YouTubeTranscriptApi
 
-# --- 🎯 ฐานข้อมูลจำลอง (Smart Demo Cache) แปลไทยคุณภาพสูง ---
-# ข้อมูลนี้จำลองการทำงานของ AI แปลภาษาที่สมบูรณ์แบบ สำหรับคลิป WSJ Humanoid Robot
-DEMO_DATA = {
-    "f3c4mQty_so": [
-        {"time": "00:00 - 00:05", "text": "นี่คือหุ่นยนต์ฮิวแมนนอยด์ (หุ่นยนต์คล้ายมนุษย์) และตอนนี้มันกำลังอาศัยอยู่ในบ้านของฉันค่ะ"},
-        {"time": "00:05 - 00:12", "text": "บริษัทเทคโนโลยีหลายแห่งกำลังแข่งขันกันอย่างดุเดือด เพื่อนำเครื่องจักรราคาแพงเหล่านี้เข้ามาอยู่ในชีวิตประจำวันของเรา"},
-        {"time": "00:12 - 00:20", "text": "แต่การที่ต้องใช้ห้องครัว ห้องนั่งเล่น และใช้ชีวิตร่วมกับมันจริงๆ จะเป็นความรู้สึกแบบไหนกันแน่?"},
-        {"time": "00:20 - 00:28", "text": "วันนี้ เราจะมาทดสอบหุ่นยนต์ผู้ช่วยทำงานบ้านแบบฮิวแมนนอยด์ตัวแรกกันค่ะ"},
-        {"time": "00:28 - 00:35", "text": "เพื่อดูว่ามันจะเข้ามาช่วยแบ่งเบาภาระได้จริงๆ หรือจะกลายเป็นเรื่องแปลกประหลาดกันแน่"},
-        {"time": "00:35 - 00:42", "text": "ขั้นตอนการติดตั้งนั้นจริงจังกว่าที่คิดเอาไว้มาก เพราะต้องมีการติดตั้งเซนเซอร์ไว้หลายจุดรอบห้อง"},
-        {"time": "00:42 - 00:50", "text": "ช่วงแรกๆ ฉันรู้สึกเหมือนมีเพื่อนร่วมห้องตัวยักษ์ที่เอาแต่เงียบ และคอยจ้องมองทุกการกระทำของฉันตลอดเวลา"},
-        {"time": "00:50 - 00:58", "text": "แต่เมื่อเวลาผ่านไปหลายชั่วโมง ฉันก็เริ่มมองเห็นทั้งศักยภาพที่น่าทึ่ง และข้อบกพร่องที่แท้จริงของเทคโนโลยีนี้ค่ะ"}
-    ]
-}
+# --- ฟังก์ชันแปลงวินาทีเป็นรูปแบบ นาที:วินาที ---
+def format_time(seconds):
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
 
 # ==========================================
 # ส่วนหน้าเว็บ (UI)
@@ -24,10 +18,7 @@ st.set_page_config(page_title="YouTube AI Audio Transcript", page_icon="🎬", l
 st.title("YouTube AI Audio Transcript 🎬🌍")
 st.write("แอปถอดเสียงจากวิดีโอ YouTube พร้อมแสดงช่วงเวลา (Timestamps) อย่างแม่นยำ")
 
-st.info("💡 **ระบบ Smart Cache ทำงาน:** เนื่องจากปัจจุบันระบบความปลอดภัยของ YouTube มีการปิดกั้น IP ของ Cloud Server (AWS) ทั่วโลก ระบบจึงสลับมาใช้โหมดดึงข้อมูลจาก Cache Database อัตโนมัติเพื่อให้การแสดงผลมีความเสถียรสูงสุด")
-
-# ใส่ลิงก์เริ่มต้นเป็นคลิปที่คุณใช้ทดสอบ
-url = st.text_input("วางลิงก์ YouTube ตรงนี้...", value="https://www.youtube.com/watch?v=f3c4mQty_so&t=2s")
+url = st.text_input("วางลิงก์ YouTube ตรงนี้...", value="https://www.youtube.com/watch?v=f3c4mQty_so")
 
 if url:
     # แกะรหัสวิดีโอจากลิงก์
@@ -38,24 +29,31 @@ if url:
     
     with col1:
         st.subheader("📺 วิดีโอ")
-        # ใช้ st.components.v1.iframe แทน st.video เพื่อหลีกเลี่ยงบั๊กการโหลดของบางเบราว์เซอร์
         if video_id:
             st.components.v1.iframe(f"https://www.youtube.com/embed/{video_id}", height=315)
         
     with col2:
-        st.subheader("บทถอดเสียงพร้อมช่วงเวลา (TH)")
+        st.subheader("บทถอดเสียงพร้อมช่วงเวลา")
         
-        if st.button("เริ่มถอดเสียงและแปลภาษา", type="primary"):
-            with st.spinner("กำลังประมวลผลคำบรรยายและแปลภาษา..."):
-                
-                # ตรวจสอบว่าตรงกับคลิป Demo ที่เราเตรียมไว้หรือไม่
-                if video_id in DEMO_DATA:
-                    st.success("✨ ถอดเสียงและแปลภาษาสำเร็จ! (ดึงข้อมูลจาก Smart Cache)")
-                    
-                    # วนลูปแสดงผลข้อความให้สวยงาม
-                    for entry in DEMO_DATA[video_id]:
-                        st.markdown(f"⏳ **[{entry['time']}]** : {entry['text']}")
-                else:
-                    # กรณีใส่วิดีโออื่นที่ไม่ได้ทำ Cache ไว้
-                    st.error("❌ **Cloud IP Blocked:** ไม่สามารถดึงข้อมูลสดจาก YouTube ได้เนื่องจากเซิร์ฟเวอร์คลาวด์ถูกจำกัดการเข้าถึง")
-                    st.warning("👉 **คำแนะนำสำหรับผู้ประเมิน:** กรุณาใช้ลิงก์วิดีโอทดสอบหลัก (WSJ Humanoid Robot) เพื่อดูตัวอย่างการทำงานของระบบประมวลผลข้อความและเวลาที่บันทึกไว้ครับ")
+        if st.button("เริ่มถอดเสียง", type="primary"):
+            if not video_id:
+                st.error("❌ ลิงก์ YouTube ไม่ถูกต้อง")
+            else:
+                with st.spinner("กำลังดึงข้อมูลจริงจากคลิป..."):
+                    try:
+                        # ดึงซับไตเติลภาษาอังกฤษ (en) ถ้าไม่มีให้ลองหาภาษาไทย (th)
+                        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'th'])
+                        st.success("✨ ดึงข้อมูลสำเร็จ! (ข้อมูลจริงเต็มคลิป)")
+                        
+                        # สร้างกล่องเลื่อนได้ (Scrollable container) เผื่อซับยาว
+                        with st.container(height=500):
+                            for entry in transcript:
+                                start_time = format_time(entry['start'])
+                                end_time = format_time(entry['start'] + entry['duration'])
+                                text = entry['text'].replace('\n', ' ')
+                                
+                                st.markdown(f"⏳ **[{start_time} - {end_time}]** : {text}")
+                                
+                    except Exception as e:
+                        st.error("❌ ไม่สามารถดึงข้อมูลได้: วิดีโอนี้อาจไม่มีซับไตเติล หรือถูก YouTube ปิดกั้นการเข้าถึง")
+                        st.write(f"รายละเอียดข้อผิดพลาด: {e}")
