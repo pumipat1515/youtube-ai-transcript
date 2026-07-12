@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import re
+import traceback
 from pytubefix import YouTube
 from faster_whisper import WhisperModel
 
@@ -21,27 +22,15 @@ def download_audio_direct(youtube_url):
     if os.path.exists(file_path):
         os.remove(file_path)
 
-    # 1. ลองใช้ PoToken ก่อนเป็นอันดับแรก
-    # PoToken คือโทเคนยืนยันว่าเป็นเบราว์เซอร์จริง ช่วยผ่านการตรวจจับของ YouTube
-    # ได้ดีกว่าการสลับ client เฉย ๆ มาก โดยเฉพาะบน IP ของ Data Center (เช่น Streamlit Cloud)
-    try:
-        st.info("🔑 กำลังลองดาวน์โหลดด้วย PoToken (วิธีที่แนะนำสำหรับ Cloud)...")
-        yt = YouTube(clean_url, client='WEB', use_po_token=True)
-        audio_stream = yt.streams.filter(only_audio=True).first()
+    error_log = []  # เก็บ error ของทุกความพยายาม เพื่อโชว์ตอนท้ายถ้าล้มเหลวทั้งหมด
 
-        if audio_stream:
-            audio_stream.download(filename=file_path)
-            st.success("ดาวน์โหลดสำเร็จด้วย PoToken!")
-            return file_path
-    except Exception:
-        pass
-
-    # 2. ถ้า PoToken ไม่ผ่าน ให้สลับ client แบบเดิมเป็นแผนสำรอง
+    # 2. สลับ client เพื่อลองดาวน์โหลด (ตัด PoToken ออกเพราะ deprecated แล้วในเวอร์ชันปัจจุบัน)
     client_list = ['WEB', 'IOS', 'MWEB', 'ANDROID', 'ANDROID_VR']
 
     for client_name in client_list:
         try:
             st.info(f"🤖 กำลังลองดาวน์โหลดด้วยระบบจำลอง: {client_name}...")
+            print(f"[DEBUG] Trying client: {client_name}")  # ไปโผล่ใน cloud logs ด้วย
             yt = YouTube(clean_url, client=client_name)
             audio_stream = yt.streams.filter(only_audio=True).first()
 
@@ -49,11 +38,19 @@ def download_audio_direct(youtube_url):
                 audio_stream.download(filename=file_path)
                 st.success(f"ดาวน์โหลดสำเร็จด้วยระบบจำลอง: {client_name}!")
                 return file_path
+            else:
+                error_log.append(f"[{client_name}] ไม่พบ audio stream")
 
-        except Exception:
+        except Exception as e:
+            err_text = f"[{client_name}] {type(e).__name__}: {e}"
+            print(f"[DEBUG] {err_text}")  # ไปโผล่ใน cloud logs ด้วย
+            error_log.append(err_text)
             continue
 
-    st.error("ระบบ YouTube ป้องกันหนาแน่นมากในขณะนี้ (ลองกดปุ่มใหม่อีกครั้งเพื่อสุ่มช่องทางใหม่ครับ)")
+    st.error("ระบบ YouTube ป้องกันหนาแน่นมากในขณะนี้ ทุก client ล้มเหลว")
+    with st.expander("🔍 ดูรายละเอียด error ของแต่ละ client (กดเพื่อขยาย)"):
+        for line in error_log:
+            st.code(line)
     return None
 
 # --- โหลดโมเดล Whisper แค่ครั้งเดียว เก็บไว้ใช้ซ้ำ (ประหยัด RAM/เวลา) ---
@@ -90,28 +87,37 @@ if url:
                 audio_path = download_audio_direct(url)
 
                 if audio_path:
-                    # 2. โหลด AI (ใช้ cache ทำให้โหลดแค่ครั้งแรกเท่านั้น)
-                    st.info("กำลังโหลดโมเดล AI (อาจใช้เวลาสักครู่ในครั้งแรก)...")
-                    model = load_model()
+                    try:
+                        # 2. โหลด AI (ใช้ cache ทำให้โหลดแค่ครั้งแรกเท่านั้น)
+                        st.info("กำลังโหลดโมเดล AI (อาจใช้เวลาสักครู่ในครั้งแรก)...")
+                        print("[DEBUG] Loading whisper model...")
+                        model = load_model()
+                        print("[DEBUG] Model loaded successfully")
 
-                    # 3. ให้ AI ทำงาน
-                    st.info("กำลังถอดเสียง...")
-                    segments, info = model.transcribe(audio_path, beam_size=5)
+                        # 3. ให้ AI ทำงาน
+                        st.info("กำลังถอดเสียง...")
+                        print("[DEBUG] Starting transcription...")
+                        segments, info = model.transcribe(audio_path, beam_size=5)
 
-                    # 4. แสดงผลลัพธ์แยกตามช่วงเวลา (Timestamps)
-                    st.success(f"ถอดเสียงสำเร็จ! (ตรวจพบภาษา: {info.language})")
+                        # 4. แสดงผลลัพธ์แยกตามช่วงเวลา (Timestamps)
+                        st.success(f"ถอดเสียงสำเร็จ! (ตรวจพบภาษา: {info.language})")
 
-                    for segment in segments:
-                        start_sec = int(segment.start)
-                        end_sec = int(segment.end)
+                        for segment in segments:
+                            start_sec = int(segment.start)
+                            end_sec = int(segment.end)
 
-                        # แปลงหน่วยวินาทีให้เป็นรูปแบบ นาที:วินาที (เช่น 01:23)
-                        start_time = f"{start_sec // 60:02d}:{start_sec % 60:02d}"
-                        end_time = f"{end_sec // 60:02d}:{end_sec % 60:02d}"
+                            # แปลงหน่วยวินาทีให้เป็นรูปแบบ นาที:วินาที (เช่น 01:23)
+                            start_time = f"{start_sec // 60:02d}:{start_sec % 60:02d}"
+                            end_time = f"{end_sec // 60:02d}:{end_sec % 60:02d}"
 
-                        # พิมพ์ข้อความออกมาพร้อมบอกเวลาด้านหน้า
-                        st.markdown(f"⏳ **[{start_time} - {end_time}]** {segment.text.strip()}")
+                            # พิมพ์ข้อความออกมาพร้อมบอกเวลาด้านหน้า
+                            st.markdown(f"⏳ **[{start_time} - {end_time}]** {segment.text.strip()}")
 
-                    # ลบไฟล์เสียงชั่วคราวทิ้งหลังใช้งานเสร็จ เพื่อประหยัดพื้นที่ดิสก์
-                    if os.path.exists(audio_path):
-                        os.remove(audio_path)
+                        # ลบไฟล์เสียงชั่วคราวทิ้งหลังใช้งานเสร็จ เพื่อประหยัดพื้นที่ดิสก์
+                        if os.path.exists(audio_path):
+                            os.remove(audio_path)
+
+                    except Exception as e:
+                        print(f"[DEBUG] Transcription error: {traceback.format_exc()}")
+                        st.error("⚠️ เกิดข้อผิดพลาดระหว่างการถอดเสียงด้วย AI")
+                        st.exception(e)
