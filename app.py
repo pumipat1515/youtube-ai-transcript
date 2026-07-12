@@ -1,45 +1,32 @@
 import streamlit as st
-import whisper
-import os
 import re
-from pytubefix import YouTube
+from youtube_transcript_api import YouTubeTranscriptApi
 
-# --- ฟังก์ชัน: ดาวน์โหลดเสียง (ระบบหมุนเวียนบอทจำลองเพื่อหลบ Error 400/403) ---
-def download_audio_direct(youtube_url):
-    st.info("กำลังเชื่อมต่อกับ YouTube เพื่อดึงไฟล์เสียง...")
-    
-    # 1. ทำความสะอาดลิงก์ (ตัดพวกเวลา &t=... ทิ้ง)
+# --- ฟังก์ชัน: ดึงบทบรรยายพร้อมเวลาโดยตรงจาก YouTube ---
+def get_youtube_transcript(youtube_url):
+    # ดึง Video ID ออกมาจากลิงก์
     match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", youtube_url)
     if not match:
         st.error("ลิงก์ YouTube ไม่ถูกต้องครับ")
         return None
     
-    clean_url = f"https://www.youtube.com/watch?v={match.group(1)}"
-    file_path = "temp_audio.m4a"
+    video_id = match.group(1)
     
-    # ลบไฟล์เก่าทิ้งก่อน (ถ้ามี)
-    if os.path.exists(file_path):
-        os.remove(file_path)
+    try:
+        # เรียกดูรายการซับไตเติลที่มีในคลิป
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         
-    # 2. รายชื่อบอทจำลองที่จะสลับกันเจาะระบบ YouTube
-    client_list = ['WEB', 'IOS', 'MWEB', 'ANDROID', 'ANDROID_VR']
-    
-    for client_name in client_list:
+        # ค้นหาซับไตเติลภาษาอังกฤษหรือภาษาไทยก่อน ถ้าไม่มีจะเลือกตัวแรกสุดที่คลิปนั้นมีอัตโนมัติ
         try:
-            st.info(f"🤖 กำลังลองดาวน์โหลดด้วยระบบจำลอง: {client_name}...")
-            yt = YouTube(clean_url, client=client_name)
-            audio_stream = yt.streams.filter(only_audio=True).first()
+            transcript = transcript_list.find_transcript(['en', 'th'])
+        except:
+            transcript = transcript_list.find_transcript([])
             
-            if audio_stream:
-                audio_stream.download(filename=file_path)
-                st.success(f"ดาวน์โหลดสำเร็จด้วยระบบจำลอง: {client_name}!")
-                return file_path
-                
-        except Exception as e:
-            continue
-            
-    st.error("ระบบ YouTube ป้องกันหนาแน่นมากในขณะนี้ (ลองกดปุ่มใหมู่อีกครั้งเพื่อสุ่มช่องทางใหม่ครับ)")
-    return None
+        return transcript.fetch()
+        
+    except Exception as e:
+        st.error("❌ ไม่สามารถดึงบทบรรยายได้: วิดีโอนี้อาจจะไม่มีระบบคำบรรยาย (Subtitle) หรือผู้เขียนปิดไว้ครับ")
+        return None
 
 # ==========================================
 # ส่วนหน้าเว็บ (UI)
@@ -47,12 +34,11 @@ def download_audio_direct(youtube_url):
 st.set_page_config(page_title="YouTube AI Audio Transcript", page_icon="🎬", layout="wide")
 
 st.title("YouTube AI Audio Transcript 🎬🌍")
-st.write("แอปนี้ใช้ AI ฟังเสียงจากวิดีโอ เดาภาษาให้อัตโนมัติ แล้วแปลงเป็นข้อความ")
+st.write("แอปถอดเสียงจากวิดีโอ YouTube พร้อมแสดงช่วงเวลา (Timestamps) อย่างแม่นยำ")
 
 # ช่องใส่ลิงก์ให้อาจารย์ทดสอบ
 url = st.text_input("วางลิงก์ YouTube ตรงนี้...")
 
-# ถ้ามีการใส่ลิงก์ ให้แสดงวิดีโอและปุ่มกด
 if url:
     col1, col2 = st.columns(2)
     
@@ -61,32 +47,22 @@ if url:
         st.video(url)
         
     with col2:
-        st.subheader("บทถอดเสียงโดย AI")
+        st.subheader("บทถอดเสียงพร้อมช่วงเวลา")
         if st.button("เริ่มถอดเสียง"):
-            with st.spinner("กำลังดำเนินการ..."):
-                # 1. โหลดเสียงจากลิงก์
-                audio_path = download_audio_direct(url)
+            with st.spinner("กำลังประมวลผลคำบรรยาย..."):
+                data = get_youtube_transcript(url)
                 
-                if audio_path:
-                    # 2. โหลด AI
-                    st.info("กำลังโหลดโมเดล AI (อาจใช้เวลาสักครู่)...")
-                    model = whisper.load_model("small")
-                    
-                    # 3. ให้ AI ทำงาน
-                    st.info("กำลังถอดเสียง...")
-                    result = model.transcribe(audio_path)
-                    
-                    # 4. แสดงผลลัพธ์แยกตามช่วงเวลา (Timestamps)
+                if data:
                     st.success("ถอดเสียงสำเร็จ!")
                     
-                    # ดึงข้อมูลทีละประโยคมาจัดฟอร์แมตเวลา
-                    for segment in result.get("segments", []):
-                        start_sec = int(segment["start"])
-                        end_sec = int(segment["end"])
+                    # วนลูปแสดงข้อความแยกตามช่วงเวลาที่กำหนด
+                    for entry in data:
+                        start_sec = int(entry['start'])
+                        end_sec = int(entry['start'] + entry['duration'])
                         
-                        # แปลงหน่วยวินาทีให้เป็นรูปแบบ นาที:วินาที (เช่น 01:23)
+                        # จัดฟอร์แมตให้อยู่ในรูปแบบ [นาที:วินาที] เช่น [01:23]
                         start_time = f"{start_sec // 60:02d}:{start_sec % 60:02d}"
                         end_time = f"{end_sec // 60:02d}:{end_sec % 60:02d}"
                         
-                        # พิมพ์ข้อความออกมาพร้อมบอกเวลาด้านหน้า
-                        st.markdown(f"⏳ **[{start_time} - {end_time}]** {segment['text']}")
+                        # แสดงผลลัพธ์บนหน้าจอ
+                        st.markdown(f"⏳ **[{start_time} - {end_time}]** {entry['text']}")
